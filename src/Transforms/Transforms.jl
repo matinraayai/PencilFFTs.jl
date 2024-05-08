@@ -138,12 +138,23 @@ true
 """
 function is_inplace end
 
+#@inline function is_inplace(tr::AbstractTransform, tr2::AbstractTransform,
+#                            next::Vararg{AbstractTransform})
+#    b = is_inplace(tr2, next...)
+#    b === nothing && return nothing
+#    a = is_inplace(tr)
+#    a === b ? a : nothing
+#end
+
 @inline function is_inplace(tr::AbstractTransform, tr2::AbstractTransform,
                             next::Vararg{AbstractTransform})
-    b = is_inplace(tr2, next...)
-    b === nothing && return nothing
     a = is_inplace(tr)
-    a === b ? a : nothing
+    if isempty(next)
+        b = is_inplace(tr2)
+    else
+        b = is_inplace(tr2, next...)
+    end
+    return a && b
 end
 
 """
@@ -282,12 +293,30 @@ julia> expand_dims(Transforms.NoTransform(), Val(2))
 (NoTransform, NoTransform)
 ```
 """
-function expand_dims(tr::AbstractTransform, ::Val{N}) where {N}
-    N === 0 && return ()
+#function expand_dims(tr::AbstractTransform, ::Val{N}) where {N}
+#    N === 0 && return ()
     # By default, the transform to be applied along the next dimension is the same
     # as the current dimension (e.g. FFT() -> (FFT(), FFT(), FFT(), ...).
     # The exception is r2c and c2r transforms.
-    (tr, expand_dims(tr, Val(N - 1))...)
+#    (tr, expand_dims(tr, Val(N - 1))...)
+#end
+function expand_dims(tr::AbstractTransform, ::Val{N}) where {N}
+    N === 0 && return ()
+    if is_inplace(tr)
+        (tr, expand_dims(tr, Val(N - 1))...)
+    else
+        if N == 1
+            # out-of-place
+            (FFT(),)
+        else
+            # apply out-of-place for first and last, in-place for middle
+            first_transform = FFT!()
+            last_transform = FFT()
+            middle_transforms = tuple([FFT!() for _ in 2:N-1]...)
+            (first_transform, middle_transforms..., last_transform)
+
+        end
+    end
 end
 
 function Base.show(io::IO, tr::F) where {F <: AbstractTransform}

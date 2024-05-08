@@ -1,6 +1,6 @@
 const RealOrComplex{T} = Union{T, Complex{T}} where T <: FFTReal
 const PlanArrayPair{P,A} = Pair{P,A} where {P <: PencilPlan1D, A <: PencilArray}
-
+using CUDA
 # Types of array over which a PencilFFTPlan can operate.
 # PencilArray and ManyPencilArray are respectively for out-of-place and in-place
 # transforms.
@@ -174,14 +174,16 @@ end
 function _apply_plans_out_of_place!(
         dir::Val, full_plan::PencilFFTPlan, y::PencilArray, x::PencilArray,
         plan::PencilPlan1D, next_plans::Vararg{PencilPlan1D})
-    @assert !is_inplace(full_plan) && !is_inplace(plan)
+#    @assert !is_inplace(full_plan) && !is_inplace(plan)
+    ibuf = full_plan.ibuf
+    GC.@preserve ibuf begin
     r = transform_info(dir, plan)
 
     # Transpose data if required.
     u, t = if pencil(x) === r.Pi
         x, nothing
     else
-        u = _temporary_pencil_array(r.Ti, r.Pi, full_plan.ibuf,
+        u = _temporary_pencil_array(r.Ti, r.Pi, ibuf,
                                     full_plan.extra_dims)
         t = Transpositions.Transposition(u, x, method=full_plan.transpose_method)
         u, transpose!(t, waitall=false)
@@ -190,7 +192,7 @@ function _apply_plans_out_of_place!(
     v = if pencil(y) === r.Po
         y
     else
-        _temporary_pencil_array(r.To, r.Po, full_plan.obuf,
+        _temporary_pencil_array(r.To, r.Po, ibuf,
                                 full_plan.extra_dims)
     end
 
@@ -198,6 +200,7 @@ function _apply_plans_out_of_place!(
 
     _wait_mpi_operations!(t, full_plan.timer)
     _apply_plans_out_of_place!(dir, full_plan, y, v, next_plans...)
+  end
 end
 
 _apply_plans_out_of_place!(dir::Val, ::PencilFFTPlan, y::PencilArray,
@@ -254,12 +257,18 @@ _make_pairs(::Tuple{}, ::Tuple{}) = ()
 @inline function _temporary_pencil_array(
         ::Type{T}, p::Pencil, buf::DenseVector{UInt8}, extra_dims::Dims,
     ) where {T}
+      GC.@preserve buf begin
     # Create "unsafe" pencil array wrapping buffer data.
     dims = (size_local(p, MemoryOrder())..., extra_dims...)
     nb = prod(dims) * sizeof(T)
-    resize!(buf, nb)
+    #resize!(buf, nb)
+    if length(buf) < nb
+        throw(ArgumentError("Buffer too small: requires at least $nb bytes"))
+    end
+
     x = Transpositions.unsafe_as_array(T, buf, dims)
     PencilArray(p, x)
+   end
 end
 
 _temporary_pencil_array(::Type, ::Nothing, etc...) = nothing

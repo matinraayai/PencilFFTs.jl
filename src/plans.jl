@@ -1,3 +1,5 @@
+#using KernelAbstractions
+using CUDA
 const ValBool = Union{Val{false}, Val{true}}
 
 # One-dimensional distributed FFT plan.
@@ -231,7 +233,6 @@ struct PencilFFTPlan{
     # TODO can I reuse the Pencil buffers (send_buf, recv_buf) to reduce allocations?
     # Temporary data buffers.
     ibuf :: Buffer
-    obuf :: Buffer
 
     # Runtime timing.
     # Should be used along with the @timeit_debug macro, to be able to turn it
@@ -246,7 +247,7 @@ struct PencilFFTPlan{
             transpose_method::AbstractTransposeMethod =
                 Transpositions.PointToPoint(),
             timer::TimerOutput = timer(pencil(A)),
-            ibuf = _make_fft_buffer(A), obuf = _make_fft_buffer(A),
+            ibuf = nothing, 
         )
         T = eltype(A)
         pen = pencil(A)
@@ -255,7 +256,7 @@ struct PencilFFTPlan{
         check_input_array(A, g)
         inplace = is_inplace(g)
         fftw_kw = _make_fft_kwargs(pen; flags = fftw_flags, timelimit = fftw_timelimit)
-
+        
         # Options for creation of 1D plans.
         plans = _create_plans(
             A, g;
@@ -270,11 +271,13 @@ struct PencilFFTPlan{
         # If the plan is in-place, the buffers won't be needed anymore, so we
         # free the memory.
         # TODO this assumes that buffers are not shared with the Pencil object!
-        if inplace
-            @assert all(x -> x !== ibuf, (pen.send_buf, pen.recv_buf))
-            @assert all(x -> x !== obuf, (pen.send_buf, pen.recv_buf))
-            resize!.((ibuf, obuf), 0)
-        end
+#        if inplace
+#            @assert all(x -> x !== ibuf, (pen.send_buf, pen.recv_buf))
+#            @assert all(x -> x !== obuf, (pen.send_buf, pen.recv_buf))
+#            resize!.((ibuf, obuf), 0)
+#        end
+
+        ibuf = _make_fft_buffer(A)
 
         edims = extra_dims(A)
         Nt = length(transforms)
@@ -288,7 +291,7 @@ struct PencilFFTPlan{
         Buffer = typeof(ibuf)
 
         new{T, N, inplace, Nt, Nd, Ne, G, P, TM, Buffer}(
-            g, t, edims, plans, scale, transpose_method, ibuf, obuf, timer,
+            g, t, edims, plans, scale, transpose_method, ibuf, timer,
         )
     end
 end
@@ -319,8 +322,14 @@ function PencilFFTPlan(A, transform::AbstractTransform, args...; kws...)
     PencilFFTPlan(A, transforms, args...; kws...)
 end
 
-_make_fft_buffer(p::Pencil) = similar(p.send_buf, UInt8, 0) :: DenseVector{UInt8}
+
 _make_fft_buffer(A::PencilArray) = _make_fft_buffer(pencil(A))
+
+function _make_fft_buffer(p::Pencil) 
+    n = prod(p.size_global)
+    m = prod(size(p.topology))
+    return CUDA.CuArray{UInt8}(undef, n * m)
+end
 
 # We decide on passing FFTW flags or not depending on the type of underlying array.
 # In particular, note that CUFFT doesn't support keyword arguments (such as
@@ -430,6 +439,7 @@ function _create_plans(
     # Note that Ai and Ao may share memory, but that's ok here.
     Ao = _temporary_pencil_array(To, Po, ibuf, extra_dims(Ai))
     plan_n = _make_1d_fft_plan(dim, Ti, Ai, Ao, transform_fw; fftw_kw = fftw_kw)
+
 
     # These are both `nothing` when there's no transforms left
     Pi_next = _make_intermediate_pencil(
