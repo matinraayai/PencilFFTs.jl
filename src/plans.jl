@@ -1,5 +1,5 @@
-#using KernelAbstractions
-using CUDA
+using KernelAbstractions
+import CUDA
 const ValBool = Union{Val{false}, Val{true}}
 
 # One-dimensional distributed FFT plan.
@@ -277,8 +277,8 @@ struct PencilFFTPlan{
 #            resize!.((ibuf, obuf), 0)
 #        end
 
-        ibuf = _make_fft_buffer(A)
-
+        ibuf = _make_fft_buffer(A)  # Allocate if not provided
+        
         edims = extra_dims(A)
         Nt = length(transforms)
         Ne = length(edims)
@@ -322,14 +322,13 @@ function PencilFFTPlan(A, transform::AbstractTransform, args...; kws...)
     PencilFFTPlan(A, transforms, args...; kws...)
 end
 
-
-_make_fft_buffer(A::PencilArray) = _make_fft_buffer(pencil(A))
-
 function _make_fft_buffer(p::Pencil) 
     n = prod(p.size_global)
     m = prod(size(p.topology))
-    return CUDA.CuArray{UInt8}(undef, n * m)
+    return similar(p.send_buf, UInt8, n * m) :: AbstractVector{UInt8}
 end
+
+_make_fft_buffer(A::PencilArray) = _make_fft_buffer(pencil(A))
 
 # We decide on passing FFTW flags or not depending on the type of underlying array.
 # In particular, note that CUFFT doesn't support keyword arguments (such as
@@ -439,7 +438,6 @@ function _create_plans(
     # Note that Ai and Ao may share memory, but that's ok here.
     Ao = _temporary_pencil_array(To, Po, ibuf, extra_dims(Ai))
     plan_n = _make_1d_fft_plan(dim, Ti, Ai, Ao, transform_fw; fftw_kw = fftw_kw)
-
 
     # These are both `nothing` when there's no transforms left
     Pi_next = _make_intermediate_pencil(
